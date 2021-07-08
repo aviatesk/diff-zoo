@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Tracing · diff-zoo</title><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.039/juliamono-regular.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.13.11/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">diff-zoo</a></span></div><form class="docs-search" action="../../search/"><input class="docs-search-query" id="documenter-search-query" name="q" type="text" placeholder="Search docs"/></form><ul class="docs-menu"><li><a class="tocitem" href="../../">README</a></li><li><span class="tocitem">Notebooks</span><ul><li><a class="tocitem" href="../intro/">Intro</a></li><li><a class="tocitem" href="../backandforth/">Back &amp; Forth</a></li><li><a class="tocitem" href="../forward/">Forward</a></li><li class="is-active"><a class="tocitem" href>Tracing</a><ul class="internal"><li><a class="tocitem" href="#Partial-Evaluation"><span>Partial Evaluation</span></a></li><li><a class="tocitem" href="#Static-Declaration"><span>Static Declaration</span></a></li><li><a class="tocitem" href="#Eager-Execution"><span>Eager Execution</span></a></li></ul></li><li><a class="tocitem" href="../reverse/">Reverse</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Notebooks</a></li><li class="is-active"><a href>Tracing</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Tracing</a></li></ul></nav><div class="docs-right"><a class="docs-edit-link" href="https://github.com/aviatesk/diff-zoo/blob/master/src/tracing.jl" title="Edit on GitHub"><span class="docs-icon fab"></span><span class="docs-label is-hidden-touch">Edit on GitHub</span></a><a class="docs-settings-button fas fa-cog" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-sidebar-button fa fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a></div></header><article class="content" id="documenter-page"><h1 id="Tracing-based-Automatic-Differentiation"><a class="docs-heading-anchor" href="#Tracing-based-Automatic-Differentiation">Tracing-based Automatic Differentiation</a><a id="Tracing-based-Automatic-Differentiation-1"></a><a class="docs-heading-anchor-permalink" href="#Tracing-based-Automatic-Differentiation" title="Permalink"></a></h1><p>Machine learning primarily needs <a href="notebooks/backandforth.ipynb">reverse-mode AD</a>, and tracing / operator overloading approaches are by far the most popular way to it; this is the technique used by ML frameworks from Theano to PyTorch. This notebook will cover the techniques used by those frameworks, as well as clarifying the distinction between the &quot;static declaration&quot; (Theano/TensorFlow) and &quot;eager execution&quot; (Chainer/PyTorch/Flux) approaches to AD.</p><pre><code class="language-julia">include(&quot;utils.jl&quot;)</code></pre><pre class="documenter-example-output">derive_r (generic function with 1 method)</pre><h2 id="Partial-Evaluation"><a class="docs-heading-anchor" href="#Partial-Evaluation">Partial Evaluation</a><a id="Partial-Evaluation-1"></a><a class="docs-heading-anchor-permalink" href="#Partial-Evaluation" title="Permalink"></a></h2><p>Say we have a simple implementation of <span>$x^n$</span> which we want to differentiate.</p><pre><code class="language-julia">function pow(x, n)
+  r = 1
+  for i = 1:n
+    r *= x
+  end
+  return r
+end
+
+pow(2, 3)</code></pre><pre class="documenter-example-output">8</pre><p>We already know how to <a href="notebooks/intro.ipynb">differentiate Wengert lists</a>, but this doesn&#39;t look much like one of those. In fact, we can&#39;t write this program as a Wengert list at all, given that it contains control flow; and more generally our programs might have things like data structures or function calls that we don&#39;t know how to differentiate either.</p><p>Though it&#39;s possible to generalise the Wengert list to handle these things, there&#39;s actually a simple and surprisingly effective alternative, called &quot;partial evaluation&quot;. This means running some part of a program without running all of it. For example, given an expression like <span>$x + 5 * n$</span> where we know <span>$n = 3$</span>, we can simplify to <span>$x + 15$</span> even though we don&#39;t know what <span>$x$</span> is. This is a common trick in compilers, and Julia will often do it for you:</p><pre><code class="language-julia">f(x, n) = x + 5 * n
+g(x) = f(x, 3)
+
+code_typed(g, Tuple{Int})[1]</code></pre><pre class="documenter-example-output">CodeInfo(
+1 ─ %1 = Base.add_int(x, 15)::Int64
+└──      return %1
+) =&gt; Int64</pre><p>This suggests a solution to our dilemma above. If we know what <span>$n$</span> is (say, <span>$3$</span>), we can write <code>pow(x, 3)</code> as <span>$((1*x)*x)*x$</span>, which <em>is</em> a Wengert expression that we can differentiate. In effect, this is a kind of compilation from a complex language (Julia, Python) to a much simpler one.</p><h2 id="Static-Declaration"><a class="docs-heading-anchor" href="#Static-Declaration">Static Declaration</a><a id="Static-Declaration-1"></a><a class="docs-heading-anchor-permalink" href="#Static-Declaration" title="Permalink"></a></h2><p>We want to trace all of the basic mathematical operations in the program, stripping away everything else. We&#39;ll do this using Julia&#39;s operator overloading; the idea is to create a new type which, rather than actually executing operations like <span>$a + b$</span>, records them into a Wengert list.</p><pre><code class="language-julia">import Base: +, -
+
+struct Staged
+  w::Wengert
+  var
+end
+
+a::Staged + b::Staged = Staged(w, push!(a.w, :($(a.var) + $(b.var))))
+
+a::Staged - b::Staged = Staged(w, push!(a.w, :($(a.var) - $(b.var))))</code></pre><pre class="documenter-example-output">- (generic function with 199 methods)</pre><p>Actually, all of our staged definitions follow the same pattern, so we can just do them in a loop. We also add an extra method so that we can multiply staged values by constants.</p><pre><code class="language-julia">for f in [:+, :*, :-, :^, :/]
+  @eval Base.$f(a::Staged, b::Staged) = Staged(a.w, push!(a.w, Expr(:call, $(Expr(:quote, f)), a.var, b.var)))
+  @eval Base.$f(a, b::Staged) = Staged(b.w, push!(b.w, Expr(:call, $(Expr(:quote, f)), a, b.var)))
+end</code></pre><p>The idea here is to begin by creating a Wengert list (the &quot;graph&quot; in ML framework parlance), and create some symbolic variables which do not yet have numerical values.</p><pre><code class="language-julia">w = Wengert()
+x = Staged(w, :x)
+y = Staged(w, :y)</code></pre><pre class="documenter-example-output">Main.__atexample__named__tracing.Staged(Wengert List
+, :y)</pre><p>When we manipulate these variables, we&#39;ll get Wengert lists.</p><pre><code class="language-julia">z = 2x + y
+z.w |&gt; Expr</code></pre><pre class="documenter-example-output">:((2x + y,;))</pre><p>Crucially, this works with our original <code>pow</code> function!</p><pre><code class="language-julia">w = Wengert()
+x = Staged(w, :x)
+
+y = pow(x, 3)
+y.w |&gt; Expr</code></pre><pre class="documenter-example-output">:((((1x) * x) * x,;))</pre><p>The rest is almost too easy! We already know how to derive this.</p><pre><code class="language-julia">dy = derive_r(y.w, :x)
+Expr(dy)</code></pre><pre class="documenter-example-output">:((y1 = 1x, y2 = y1 * x, y4 = x * x, (y2 + x * y1) + y4;))</pre><p>If we dump the derived code into a function, we get code for the derivative of <span>$x^3$</span> at any point (i.e. <span>$3x^2$</span>).</p><pre><code class="language-">@eval dcube(x) = $(Expr(dy))
+
+dcube(5)</code></pre><p>Congratulations, you just implemented TensorFlow.</p><h2 id="Eager-Execution"><a class="docs-heading-anchor" href="#Eager-Execution">Eager Execution</a><a id="Eager-Execution-1"></a><a class="docs-heading-anchor-permalink" href="#Eager-Execution" title="Permalink"></a></h2><p>This approach has a crucial problem; because it works by stripping out control flow and parameters like <span>$n$</span>, it effectively freezes all of these things. We can get a specific derivative for <span>$x^3$</span>, <span>$x^4$</span> and so on, but we can&#39;t get the general derivative of <span>$x^n$</span> with a single Wengert list. This puts a severe limitation on the kinds of models we can express.<span>$^1$</span></p><p>The solution? Well, just re-build the Wengert list from scratch every time!</p><pre><code class="language-">function D(f, x)
+  x_ = Staged(w, :x)
+  dy = derive(f(x_).w, :x)
+  eval(:(let x = $x; $(Expr(dy)) end))
+end
+
+D(x -&gt; pow(x, 3), 5)</code></pre><pre><code class="language-">D(x -&gt; pow(x, 5), 5)</code></pre><p>This gets us our gradients, but it&#39;s not going to be fast – there&#39;s a lot of overhead to building and evaluating the list/graph every time. There are two things we can do to alleviate this:</p><ol><li>Interpret, rather compile, the Wengert list.</li><li>Fuse interpretation of the list (the numeric phase) with the building and manipulation of the Wengert list (the symbolic phase).</li></ol><p>Implementing this looks a lot like the <code>Staged</code> object above. The key difference is that alongside the Wengert list, we store the numerical values of each variable and instruction as we go along. Also, rather than explicitly naming variables <code>x</code>, <code>y</code> etc, we generate names using <code>gensym()</code>.</p><pre><code class="language-julia">gensym()</code></pre><pre class="documenter-example-output">Symbol(&quot;##262&quot;)</pre><pre><code class="language-julia">struct Tape
+  instructions::Wengert
+  values
+end
+
+Tape() = Tape(Wengert(), Dict())
+
+struct Tracked
+  w::Tape
+  var
+end
+
+function track(t::Tape, x)
+  var = gensym()
+  t.values[var] = x
+  Tracked(t, var)
+end
+
+Base.getindex(x::Tracked) = x.w.values[x.var]
+
+for f in [:+, :*, :-, :^, :/]
+  @eval function Base.$f(a::Tracked, b::Tracked)
+    var = push!(a.w.instructions, Expr(:call, $(Expr(:quote, f)), a.var, b.var))
+    a.w.values[var] = $f(a[], b[])
+    Tracked(a.w, var)
+  end
+  @eval function Base.$f(a, b::Tracked)
+    var = push!(b.w.instructions, Expr(:call, $(Expr(:quote, f)), a, b.var))
+    b.w.values[var] = $f(a, b[])
+    Tracked(b.w, var)
+  end
+  @eval function Base.$f(a::Tracked, b)
+    var = push!(a.w.instructions, Expr(:call, $(Expr(:quote, f)), a.var, b))
+    a.w.values[var] = $f(a[], b)
+    Tracked(a.w, var)
+  end
+end</code></pre><p>Now, when we call <code>pow</code> it looks a lot more like we are dealing with normal numeric values; but there is still a Wengert list inside.</p><pre><code class="language-julia">t = Tape()
+x = track(t, 5)
+
+y = pow(x, 3)
+y[]
+
+y.w.instructions |&gt; Expr</code></pre><pre class="documenter-example-output">:((((1var&quot;##263&quot;) * var&quot;##263&quot;) * var&quot;##263&quot;,;))</pre><p>Finally, we need to alter how we derive this list. The key insight is that since we already have values available, we don&#39;t need to explicitly build and evaluate the derivative code; instead, we can just evaluate each instruction numerically as we go along. We more-or-less just need to replace our symbolic functions like (<code>addm</code>) with the regular ones (<code>+</code>).</p><p>This is, of course, not a particularly optimised implementation, and faster versions have many more tricks up their sleaves. But this gets at all the key ideas.</p><pre><code class="language-julia">function derive(w::Tape, xs...)
+  ds = Dict()
+  val(x) = get(w.values, x, x)
+  d(x) = get(ds, x, 0)
+  d(x, Δ) = ds[x] = d(x) + Δ
+  d(lastindex(w.instructions), 1)
+  for v in reverse(collect(keys(w.instructions)))
+    ex = w.instructions[v]
+    Δ = d(v)
+    if @capture(ex, a_ + b_)
+      d(a, Δ)
+      d(b, Δ)
+    elseif @capture(ex, a_ * b_)
+      d(a, Δ * val(b))
+      d(b, Δ * val(a))
+    elseif @capture(ex, a_^n_Number)
+      d(a, Δ * n * val(a) ^ (n-1))
+    elseif @capture(ex, a_ / b_)
+      d(a, Δ * val(b))
+      d(b, -Δ*val(a)/val(b)^2)
+    else
+      error(&quot;$ex is not differentiable&quot;)
+    end
+  end
+  return map(x -&gt; d(x.var), xs)
+end
+
+derive(y.w, x)</code></pre><pre class="documenter-example-output">(75,)</pre><p>With this we can implement a more general gradient function.</p><pre><code class="language-julia">function gradient(f, xs...)
+  t = Tape()
+  xs = map(x -&gt; track(t, x), xs)
+  f(xs...)
+  derive(t, xs...)
+end</code></pre><pre class="documenter-example-output">gradient (generic function with 1 method)</pre><p>Even with the limited set of gradients that we have, we&#39;re well on our way to differentiating more complex programs, like a custom <code>sin</code> function.</p><pre><code class="language-julia">gradient((a, b) -&gt; a*b, 2, 3)</code></pre><pre class="documenter-example-output">(3, 2)</pre><pre><code class="language-julia">mysin(x) = sum((-1)^k/factorial(1.0+2k) * x^(1+2k) for k = 0:5)</code></pre><pre class="documenter-example-output">mysin (generic function with 1 method)</pre><pre><code class="language-julia">gradient(mysin, 0.5)</code></pre><pre class="documenter-example-output">(0.8775825618898637,)</pre><pre><code class="language-julia">cos(0.5)</code></pre><pre class="documenter-example-output">0.8775825618903728</pre><p>We can even take nested derivatives!</p><pre><code class="language-julia">gradient(x -&gt; gradient(mysin, x)[1], 0.5)</code></pre><pre class="documenter-example-output">(-0.4794255386164159,)</pre><pre><code class="language-julia">-sin(0.5)</code></pre><pre class="documenter-example-output">-0.479425538604203</pre><p>Though the tracing approach has significant limitations, its power is in how easy it is to implement: one can build a fairly full-featured implementation, in almost any language, in a weekend. Almost all languages have the operator-overloading features required, and no matter how complex the host language, one ends up with a simple Wengert list.</p><p>Note that we have not removed the need to apply our basic symbolic differentiation algorithm here. We are still looking up gradient definitions, reversing data flow and applying the chain rule – it&#39;s just interleaved with our numerical operations, and we avoid building the output into an explicit Wengert list.</p><p>It&#39;s somewhat unusual to emphasise the symbolic side of AD, but I think it gives us an incisive way to understand the tradeoffs that different systems make. For example: TensorFlow-style AD has its numeric phase separate from Python&#39;s runtime, which makes it awkward to use. Conversely, PyTorch does run its numerical phase at runtime, but also its symbolic phase, making it impossible to optimise the backwards pass.</p><p>We <a href="notebooks/forward.ipynb">observed</a> that OO-based forward mode is particularly successful because it carries out its symbolic and numeric operations at Julia&#39;s compile and run time, respectively. In the <a href="notebooks/reverse.ipynb">source to source reverse mode</a> notebook, we&#39;ll explore doing this for reverse mode as well.</p><h3 id="Footnotes"><a class="docs-heading-anchor" href="#Footnotes">Footnotes</a><a id="Footnotes-1"></a><a class="docs-heading-anchor-permalink" href="#Footnotes" title="Permalink"></a></h3><p class="math-container">\[^1\]</p><p>Systems like TensorFlow can also just provide ways to inject control flow into the graph. This brings us closer to a <a href="notebooks/reverse.ipynb">source-to-source approach</a> where Python is used to build an expression in TensorFlows internal graph language.</p><p>Fun fact: PyTorch and Flux&#39;s tapes are actually closer to the <code>Expr</code> format that we originally used, in which &quot;tracked&quot; tensors just have pointers to their parents (implicitly forming a graph/Wengert list/expression tree). A naive algorithm for backpropagation suffers from exponential runtime for the <em>exact</em> same reason that naive symbolic diff does; &quot;flattening&quot; this graph into a tree causes it to blow up in size.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../forward/">« Forward</a><a class="docs-footer-nextpage" href="../reverse/">Reverse »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.3 on <span class="colophon-date" title="Thursday 8 July 2021 18:32">Thursday 8 July 2021</span>. Using Julia version 1.6.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
