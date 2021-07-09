@@ -2,7 +2,9 @@
     This is a clone of [the "Differentiation for Hackers" handbook](https://github.com/MikeInnes/diff-zoo), written by Mike J. Innes.
     All the purpose of this clone is to render the notebooks with [Documenter.jl](https://github.com/JuliaDocs/Documenter.jl) and host them on GitHub Pages.
     The notebooks rendered by Documenter.jl are available [here](https://aviatesk.github.io/diff-zoo/dev/).
-    Except that, all the contents should be identical, and all the credit goes to him.
+    Along with some cosmetic changes in order to make the original texts fit with Documenter.jl's syntax,
+    I also made minor corrections and improvements like fixing the implementations of the quotient rule, adding simplification rule for symbolic representation of exponentiation, etc.
+    Except that, all the contents should be identical and all the credit goes to him.
 
 # Differentiation for Hackers
 
