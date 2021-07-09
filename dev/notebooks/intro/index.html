@@ -31,21 +31,22 @@ derive(y, :x)</code></pre><pre class="documenter-example-output">:(1 + (0 + (1 +
   @capture(ex, a_ + b_) ? :($(derive(a, x)) + $(derive(b, x))) :
   @capture(ex, a_ * b_) ? :($a * $(derive(b, x)) + $b * $(derive(a, x))) :
   @capture(ex, a_^n_Number) ? :($(derive(a, x)) * ($n * $a^$(n-1))) :
-  @capture(ex, a_ / b_) ? :($b * $(derive(a, x)) - $a * $(derive(b, x)) / $b^2) :
+  @capture(ex, a_ / b_) ? :(($b * $(derive(a, x)) - $a * $(derive(b, x))) / $b^2) :
   error(&quot;$ex is not differentiable&quot;)
 end</code></pre><pre class="documenter-example-output">derive (generic function with 1 method)</pre><p>This is enough to get us a slightly more difficult derivative.</p><pre><code class="language-julia">y = :(3x^2 + (2x + 1))
 dy = derive(y, :x)</code></pre><pre class="documenter-example-output">:((3 * (1 * (2 * x ^ 1)) + x ^ 2 * 0) + ((2 * 1 + x * 0) + 0))</pre><p>This is correct – it&#39;s equivalent to <span>$6x + 2$</span> – but it&#39;s also a bit noisy, with a lot of redundant terms like <span>$x + 0$</span>. We can clean this up by creating some smarter functions to do our symbolic addition and multiplication. They&#39;ll just avoid actually doing anything if the input is redundant.</p><pre><code class="language-julia">addm(a, b) = a == 0 ? b : b == 0 ? a : :($a + $b)
 mulm(a, b) = 0 in (a, b) ? 0 : a == 1 ? b : b == 1 ? a : :($a * $b)
-mulm(a, b, c...) = mulm(mulm(a, b), c...)</code></pre><pre class="documenter-example-output">mulm (generic function with 2 methods)</pre><pre><code class="language-julia">addm(:a, :b)</code></pre><pre class="documenter-example-output">:(a + b)</pre><pre><code class="language-julia">addm(:a, 0)</code></pre><pre class="documenter-example-output">:a</pre><pre><code class="language-julia">mulm(:b, 1)</code></pre><pre class="documenter-example-output">:b</pre><p>Our tweaked <code>derive</code> function:</p><pre><code class="language-julia">function derive(ex, x)
+mulm(a, b, c...) = mulm(mulm(a, b), c...)
+powm(a, b) = b == 0 ? 1 : b == 1 ? a : :($a ^ $b)</code></pre><pre class="documenter-example-output">powm (generic function with 1 method)</pre><pre><code class="language-julia">addm(:a, :b)</code></pre><pre class="documenter-example-output">:(a + b)</pre><pre><code class="language-julia">addm(:a, 0)</code></pre><pre class="documenter-example-output">:a</pre><pre><code class="language-julia">mulm(:b, 1)</code></pre><pre class="documenter-example-output">:b</pre><pre><code class="language-julia">powm(:a, 1)</code></pre><pre class="documenter-example-output">:a</pre><p>Our tweaked <code>derive</code> function:</p><pre><code class="language-julia">function derive(ex, x)
   ex == x ? 1 :
   ex isa Union{Number,Symbol} ? 0 :
   @capture(ex, a_ + b_) ? addm(derive(a, x), derive(b, x)) :
   @capture(ex, a_ * b_) ? addm(mulm(a, derive(b, x)), mulm(b, derive(a, x))) :
-  @capture(ex, a_^n_Number) ? mulm(derive(a, x),n,:($a^$(n-1))) :
-  @capture(ex, a_ / b_) ? :($(mulm(b, derive(a, x))) - $(mulm(a, derive(b, x))) / $b^2) :
+  @capture(ex, a_^n_Number) ? mulm(derive(a, x), n, powm(a, n-1)) :
+  @capture(ex, a_ / b_) ? :(($(mulm(b, derive(a, x))) - $(mulm(a, derive(b, x)))) / $(powm(b, 2))) :
   error(&quot;$ex is not differentiable&quot;)
 end</code></pre><pre class="documenter-example-output">derive (generic function with 1 method)</pre><p>And the output is much cleaner.</p><pre><code class="language-julia">y = :(3x^2 + (2x + 1))
-dy = derive(y, :x)</code></pre><pre class="documenter-example-output">:(3 * (2 * x ^ 1) + 2)</pre><p>Having done this, we can also calculate a nested derivative <span>$\frac{d^2y}{dx^2}$</span>, and so on.</p><pre><code class="language-julia">ddy = derive(dy, :x)</code></pre><pre class="documenter-example-output">:(3 * (2 * x ^ 0))</pre><pre><code class="language-julia">derive(ddy, :x)</code></pre><pre class="documenter-example-output">0</pre><p>There is a deeper problem with our differentiation algorithm, though. Look at how big this derivative is.</p><pre><code class="language-julia">derive(:(x / (1 + x^2)), :x)</code></pre><pre class="documenter-example-output">:((1 + x ^ 2) - (x * (2 * x ^ 1)) / (1 + x ^ 2) ^ 2)</pre><p>Adding an extra <code>* x</code> makes it even bigger! There&#39;s a bunch of redundant work here, repeating the expression <span>$1 + x^2$</span> three times over.</p><pre><code class="language-julia">derive(:(x / (1 + x^2) * x), :x)</code></pre><pre class="documenter-example-output">:(x / (1 + x ^ 2) + x * ((1 + x ^ 2) - (x * (2 * x ^ 1)) / (1 + x ^ 2) ^ 2))</pre><p>This happens because our rules look like, <span>$\frac{d(u*v)}{dx} = u*\frac{dv}{dx} + v*\frac{du}{dx}$</span>. Every multiplication repeats the whole sub-expression and its derivative, making the output exponentially large in the size of its input.</p><p>This seems to be an achilles heel for our little differentiator, since it will make it impractical to run on any realistically-sized program. But wait! Things are not quite as simple as they seem, because this expression is not <em>actually</em> as big as it looks.</p><p>Imagine we write down:</p><pre><code class="language-julia">y1 = :(1 * 2)
+dy = derive(y, :x)</code></pre><pre class="documenter-example-output">:(3 * (2x) + 2)</pre><p>Having done this, we can also calculate a nested derivative <span>$\frac{d^2y}{dx^2}$</span>, and so on.</p><pre><code class="language-julia">ddy = derive(dy, :x)</code></pre><pre class="documenter-example-output">:(3 * 2)</pre><pre><code class="language-julia">derive(ddy, :x)</code></pre><pre class="documenter-example-output">0</pre><p>There is a deeper problem with our differentiation algorithm, though. Look at how big this derivative is.</p><pre><code class="language-julia">derive(:(x / (1 + x^2)), :x)</code></pre><pre class="documenter-example-output">:(((1 + x ^ 2) - x * (2x)) / (1 + x ^ 2) ^ 2)</pre><p>Adding an extra <code>* x</code> makes it even bigger! There&#39;s a bunch of redundant work here, repeating the expression <span>$1 + x^2$</span> three times over.</p><pre><code class="language-julia">derive(:(x / (1 + x^2) * x), :x)</code></pre><pre class="documenter-example-output">:(x / (1 + x ^ 2) + x * (((1 + x ^ 2) - x * (2x)) / (1 + x ^ 2) ^ 2))</pre><p>This happens because our rules look like, <span>$\frac{d(u*v)}{dx} = u*\frac{dv}{dx} + v*\frac{du}{dx}$</span>. Every multiplication repeats the whole sub-expression and its derivative, making the output exponentially large in the size of its input.</p><p>This seems to be an achilles heel for our little differentiator, since it will make it impractical to run on any realistically-sized program. But wait! Things are not quite as simple as they seem, because this expression is not <em>actually</em> as big as it looks.</p><p>Imagine we write down:</p><pre><code class="language-julia">y1 = :(1 * 2)
 y2 = :($y1 + $y1 + $y1 + $y1)</code></pre><pre class="documenter-example-output">:(1 * 2 + 1 * 2 + 1 * 2 + 1 * 2)</pre><p>This looks like a large expression, but in actual fact it does not contain <span>$1*2$</span> four times over, just four pointers to <span>$y1$</span>; it is not really a tree but a graph that gets printed as a tree. We can show this by explicitly printing the expression in a way that preserves structure.</p><p>(The definition of <code>printstructure</code> is not important to understand, but is here for reference.)</p><pre><code class="language-julia">printstructure(x, _, _) = x
 
 function printstructure(ex::Expr, cache = IdDict(), n = Ref(0))
@@ -57,34 +58,32 @@ function printstructure(ex::Expr, cache = IdDict(), n = Ref(0))
 end
 
 printstructure(y2);</code></pre><pre class="documenter-example-output">y1 = 1 * 2
-y2 = y1 + y1 + y1 + y1</pre><p>Note that this is <em>not</em> the same as running common subexpression elimination to simplify the tree, which would have an <span>$O(n^2)$</span> computational cost. If there is real duplication in the expression, it&#39;ll show up.</p><pre><code class="language-julia">:(1*2 + 1*2) |&gt; printstructure;</code></pre><pre class="documenter-example-output">y1 = 1 * 2
+y2 = y1 + y1 + y1 + y1</pre><p>Note that this is <em>not</em> the same as running common subexpression elimination to simplify the tree, which would have an <span>$O(n^2)$</span> computational cost. If there is real duplication in the expression, it&#39;ll show up (technically, that is because <code>IdDict</code> hashes by object-id and each <code>Expr</code> has different identity and object-id accordingly).</p><pre><code class="language-julia">:(1*2 + 1*2) |&gt; printstructure;</code></pre><pre class="documenter-example-output">y1 = 1 * 2
 y2 = 1 * 2
 y3 = y1 + y2</pre><p>This is effectively a change in notation: we were previously using a kind of &quot;calculator notation&quot; in which any computation used more than once had to be repeated in full. Now we are allowed to use variable bindings to get the same effect.</p><p>If we try <code>printstructure</code> on our differentiated code, we&#39;ll see that the output is not so bad after all:</p><pre><code class="language-julia">:(x / (1 + x^2)) |&gt; printstructure;</code></pre><pre class="documenter-example-output">y1 = x ^ 2
 y2 = 1 + y1
-y3 = x / y2</pre><pre><code class="language-julia">derive(:(x / (1 + x^2)), :x)</code></pre><pre class="documenter-example-output">:((1 + x ^ 2) - (x * (2 * x ^ 1)) / (1 + x ^ 2) ^ 2)</pre><pre><code class="language-julia">derive(:(x / (1 + x^2)), :x) |&gt; printstructure;</code></pre><pre class="documenter-example-output">y1 = x ^ 2
+y3 = x / y2</pre><pre><code class="language-julia">derive(:(x / (1 + x^2)), :x)</code></pre><pre class="documenter-example-output">:(((1 + x ^ 2) - x * (2x)) / (1 + x ^ 2) ^ 2)</pre><pre><code class="language-julia">derive(:(x / (1 + x^2)), :x) |&gt; printstructure;</code></pre><pre class="documenter-example-output">y1 = x ^ 2
 y2 = 1 + y1
-y3 = x ^ 1
-y4 = 2y3
-y5 = x * y4
+y3 = 2x
+y4 = x * y3
+y5 = y2 - y4
 y6 = y2 ^ 2
-y7 = y5 / y6
-y8 = y2 - y7</pre><p>The expression <span>$x^2 + 1$</span> is now defined once and reused rather than being repeated, and adding the extra <code>* x</code> now adds a couple of instructions to our derivative, rather than doubling its size. It turns out that our &quot;naive&quot; symbolic differentiator actually preserves structure in a very sensible way, and we just needed the right program representation to exploit that.</p><pre><code class="language-julia">derive(:(x / (1 + x^2) * x), :x)</code></pre><pre class="documenter-example-output">:(x / (1 + x ^ 2) + x * ((1 + x ^ 2) - (x * (2 * x ^ 1)) / (1 + x ^ 2) ^ 2))</pre><pre><code class="language-julia">derive(:(x / (1 + x^2) * x), :x) |&gt; printstructure;</code></pre><pre class="documenter-example-output">y1 = x ^ 2
+y7 = y5 / y6</pre><p>The expression <span>$x^2 + 1$</span> is now defined once and reused rather than being repeated, and adding the extra <code>* x</code> now adds a couple of instructions to our derivative, rather than doubling its size. It turns out that our &quot;naive&quot; symbolic differentiator actually preserves structure in a very sensible way, and we just needed the right program representation to exploit that.</p><pre><code class="language-julia">derive(:(x / (1 + x^2) * x), :x)</code></pre><pre class="documenter-example-output">:(x / (1 + x ^ 2) + x * (((1 + x ^ 2) - x * (2x)) / (1 + x ^ 2) ^ 2))</pre><pre><code class="language-julia">derive(:(x / (1 + x^2) * x), :x) |&gt; printstructure;</code></pre><pre class="documenter-example-output">y1 = x ^ 2
 y2 = 1 + y1
 y3 = x / y2
-y4 = x ^ 1
-y5 = 2y4
-y6 = x * y5
+y4 = 2x
+y5 = x * y4
+y6 = y2 - y5
 y7 = y2 ^ 2
 y8 = y6 / y7
-y9 = y2 - y8
-y10 = x * y9
-y11 = y3 + y10</pre><p>Calculator notation – expressions without variable bindings – is a terrible format for anything, and will tend to blow up in size whether you differentiate it or not. Symbolic differentiation is commonly criticised for its susceptability to &quot;expression swell&quot;, but in fact has nothing to do with the differentiation algorithm itself, and we need not change it to get better results.</p><p>Conversely, the way we have used <code>Expr</code> objects to represent variable bindings is perfectly sound, if a little unusual. This format could happily be used to illustrate all of the concepts in this handbook, and the recursive algorithms used to do so are elegant. However, it will clarify some things if they are written a little more explicitly; for this we&#39;ll introduce a new, equivalent representation for expressions.</p><h2 id="The-Wengert-List"><a class="docs-heading-anchor" href="#The-Wengert-List">The Wengert List</a><a id="The-Wengert-List-1"></a><a class="docs-heading-anchor-permalink" href="#The-Wengert-List" title="Permalink"></a></h2><p>The output of <code>printstructure</code> above is known as a &quot;Wengert List&quot;, an explicit list of instructions that&#39;s a bit like writing assembly code. Really, Wengert lists are nothing more or less than mathematical expressions written out verbosely, and we can easily convert to and from equivalent <code>Expr</code> objects.</p><pre><code class="language-julia">include(&quot;utils.jl&quot;);</code></pre><pre><code class="language-julia">y = :(3x^2 + (2x + 1))</code></pre><pre class="documenter-example-output">:(3 * x ^ 2 + (2x + 1))</pre><pre><code class="language-julia">wy = Wengert(y)</code></pre><pre class="documenter-example-output">Wengert List
+y9 = x * y8
+y10 = y3 + y9</pre><p>Calculator notation – expressions without variable bindings – is a terrible format for anything, and will tend to blow up in size whether you differentiate it or not. Symbolic differentiation is commonly criticised for its susceptibility to &quot;expression swell&quot;, but in fact has nothing to do with the differentiation algorithm itself, and we need not change it to get better results.</p><p>Conversely, the way we have used <code>Expr</code> objects to represent variable bindings is perfectly sound, if a little unusual. This format could happily be used to illustrate all of the concepts in this handbook, and the recursive algorithms used to do so are elegant. However, it will clarify some things if they are written a little more explicitly; for this we&#39;ll introduce a new, equivalent representation for expressions.</p><h2 id="The-Wengert-List"><a class="docs-heading-anchor" href="#The-Wengert-List">The Wengert List</a><a id="The-Wengert-List-1"></a><a class="docs-heading-anchor-permalink" href="#The-Wengert-List" title="Permalink"></a></h2><p>The output of <code>printstructure</code> above is known as a &quot;Wengert List&quot;, an explicit list of instructions that&#39;s a bit like writing assembly code. Really, Wengert lists are nothing more or less than mathematical expressions written out verbosely, and we can easily convert to and from equivalent <code>Expr</code> objects.</p><pre><code class="language-julia">include(&quot;utils.jl&quot;);</code></pre><pre><code class="language-julia">y = :(3x^2 + (2x + 1))</code></pre><pre class="documenter-example-output">:(3 * x ^ 2 + (2x + 1))</pre><pre><code class="language-julia">wy = Wengert(y)</code></pre><pre class="documenter-example-output">Wengert List
 y1 = x ^ 2
 y2 = 3 * y1
 y3 = 2x
 y4 = y3 + 1
 y5 = y2 + y4
-</pre><pre><code class="language-julia">Expr(wy)</code></pre><pre class="documenter-example-output">:((3 * x ^ 2 + (2x + 1),;))</pre><p>Inside, we can see that it really is just a list of function calls, where <span>$y_n$</span> refers to the result of the <span>$n^{th}$</span>.</p><pre><code class="language-julia">wy.instructions</code></pre><pre class="documenter-example-output">5-element Vector{Any}:
+</pre><pre><code class="language-julia">Expr(wy)</code></pre><pre class="documenter-example-output">:(3 * x ^ 2 + (2x + 1))</pre><p>Inside, we can see that it really is just a list of function calls, where <span>$y_n$</span> refers to the result of the <span>$n^{th}$</span>.</p><pre><code class="language-julia">wy.instructions</code></pre><pre class="documenter-example-output">5-element Vector{Any}:
  :(x ^ 2)
  :(3 * y1)
  :(2x)
@@ -103,24 +102,30 @@ y2 = y1 + 1
   ex isa Union{Number,Symbol} ? 0 :
   @capture(ex, a_ + b_) ? push!(w, addm(derive(a, x, w), derive(b, x, w))) :
   @capture(ex, a_ * b_) ? push!(w, addm(mulm(a, derive(b, x, w)), mulm(b, derive(a, x, w)))) :
-  @capture(ex, a_^n_Number) ? push!(w, mulm(derive(a, x, w),n,:($a^$(n-1)))) :
-  @capture(ex, a_ / b_) ? push!(w, :($(mulm(b, derive(a, x, w))) - $(mulm(a, derive(b, x, w))) / $b^2)) :
+  @capture(ex, a_^n_Number) ? push!(w, mulm(derive(a, x, w), n, powm(a, n-1))) :
+  @capture(ex, a_ / b_) ? push!(w, :(($(mulm(b, derive(a, x, w))) - $(mulm(a, derive(b, x, w)))) / $(powm(b, 2)))) :
   error(&quot;$ex is not differentiable&quot;)
 end
 
-derive(w::Wengert, x) = (derive(w[end], x, w); w)</code></pre><pre class="documenter-example-output">derive (generic function with 3 methods)</pre><p>It behaves identically to what we wrote before; we have only changed the underlying representation.</p><pre><code class="language-julia">derive(Wengert(:(3x^2 + (2x + 1))), :x) |&gt; Expr</code></pre><pre class="documenter-example-output">:((3 * (2 * x ^ 1) + 2,;))</pre><p>In fact, we can compare them directly using the <code>printstructure</code> function we wrote earlier.</p><pre><code class="language-julia">derive(:(x / (1 + x^2)), :x) |&gt; printstructure</code></pre><pre class="documenter-example-output">:y8</pre><pre><code class="language-julia">derive(Wengert(:(x / (1 + x^2))), :x)</code></pre><pre class="documenter-example-output">Wengert List
+derive(w::Wengert, x) = (derive(w[end], x, w); w)</code></pre><pre class="documenter-example-output">derive (generic function with 3 methods)</pre><p>It behaves identically to what we wrote before; we have only changed the underlying representation.</p><pre><code class="language-julia">derive(Wengert(:(3x^2 + (2x + 1))), :x) |&gt; Expr</code></pre><pre class="documenter-example-output">:(3 * (2x) + 2)</pre><p>In fact, we can compare them directly using the <code>printstructure</code> function we wrote earlier.</p><pre><code class="language-julia">derive(:(x / (1 + x^2)), :x) |&gt; printstructure;</code></pre><pre class="documenter-example-output">y1 = x ^ 2
+y2 = 1 + y1
+y3 = 2x
+y4 = x * y3
+y5 = y2 - y4
+y6 = y2 ^ 2
+y7 = y5 / y6</pre><pre><code class="language-julia">derive(Wengert(:(x / (1 + x^2))), :x)</code></pre><pre class="documenter-example-output">Wengert List
 y1 = x ^ 2
 y2 = 1 + y1
 y3 = x / y2
-y4 = x ^ 1
-y5 = 2 * y4
-y6 = x * y5
+y4 = 2x
+y5 = x * y4
+y6 = y2 - y5
 y7 = y2 ^ 2
 y8 = y6 / y7
-y9 = y2 - y8
-</pre><p>They are <em>almost</em> identical; the only difference is the unused variable <code>y3</code> in the Wengert version. This happens because our <code>Expr</code> format effectively removes dead code for us automatically. We&#39;ll see the same thing happen if we convert the Wengert list back into an <code>Expr</code>.</p><pre><code class="language-julia">derive(Wengert(:(x / (1 + x^2))), :x) |&gt; Expr
-
-function derive(w::Wengert, x)
+</pre><p>They are <em>almost</em> identical; the only difference is the unused variable <code>y3</code> in the Wengert version. This happens because our <code>Expr</code> format effectively removes dead code for us automatically. We&#39;ll see the same thing happen if we convert the Wengert list back into an <code>Expr</code>.</p><pre><code class="language-julia">derive(Wengert(:(x / (1 + x^2))), :x) |&gt; Expr</code></pre><pre class="documenter-example-output">quote
+    y2 = 1 + x ^ 2
+    (y2 - x * (2x)) / y2 ^ 2
+end</pre><pre><code class="language-julia">function derive(w::Wengert, x)
   ds = Dict()
   ds[x] = 1
   d(x) = get(ds, x, 0)
@@ -128,15 +133,18 @@ function derive(w::Wengert, x)
     ex = w[v]
     Δ = @capture(ex, a_ + b_) ? addm(d(a), d(b)) :
         @capture(ex, a_ * b_) ? addm(mulm(a, d(b)), mulm(b, d(a))) :
-        @capture(ex, a_^n_Number) ? mulm(d(a),n,:($a^$(n-1))) :
-        @capture(ex, a_ / b_) ? :($(mulm(b, d(a))) - $(mulm(a, d(b))) / $b^2) :
+        @capture(ex, a_^n_Number) ? mulm(d(a), n, powm(a,n-1)) :
+        @capture(ex, a_ / b_) ? :(($(mulm(b, d(a))) - $(mulm(a, d(b)))) / $(powm(b, 2))) :
         error(&quot;$ex is not differentiable&quot;)
     ds[v] = push!(w, Δ)
   end
   return w
 end
 
-derive(Wengert(:(x / (1 + x^2))), :x) |&gt; Expr</code></pre><pre class="documenter-example-output">:((y2 = 1 + x ^ 2, y2 - (x * (2 * x ^ 1)) / y2 ^ 2;))</pre><p>One more thing. The astute reader may notice that our differentiation algorithm begins with <span>$\frac{dx}{dx}=1$</span> and propagates this forward to the output; in other words it does <a href="../backandforth/">forward-mode differentiation</a>. We can tweak our code a little to do reverse mode instead.</p><pre><code class="language-julia">function derive_r(w::Wengert, x)
+derive(Wengert(:(x / (1 + x^2))), :x) |&gt; Expr</code></pre><pre class="documenter-example-output">quote
+    y2 = 1 + x ^ 2
+    (y2 - x * (2x)) / y2 ^ 2
+end</pre><p>One more thing. The astute reader may notice that our differentiation algorithm begins with <span>$\frac{dx}{dx}=1$</span> and propagates this forward to the output; in other words it does <a href="../backandforth/">forward-mode differentiation</a>. We can tweak our code a little to do reverse mode instead.</p><pre><code class="language-julia">function derive_r(w::Wengert, x)
   ds = Dict()
   d(x) = get(ds, x, 0)
   d(x, Δ) = ds[x] = haskey(ds, x) ? addm(ds[x],Δ) : Δ
@@ -151,14 +159,25 @@ derive(Wengert(:(x / (1 + x^2))), :x) |&gt; Expr</code></pre><pre class="documen
       d(a, push!(w, mulm(Δ, b)))
       d(b, push!(w, mulm(Δ, a)))
     elseif @capture(ex, a_^n_Number)
-      d(a, mulm(Δ, n, :($a^$(n-1))))
+      d(a, mulm(Δ, n, :($(powm(a, n-1)))))
     elseif @capture(ex, a_ / b_)
-      d(a, push!(w, mulm(Δ, b)))
-      d(b, push!(w, :(-$(mulm(Δ, a))/$b^2)))
+      d(a, push!(w, :($(mulm(Δ, b)) / $(powm(b, 2)))))
+      d(b, push!(w, :(-$(mulm(Δ, a)) / $(powm(b, 2)))))
     else
       error(&quot;$ex is not differentiable&quot;)
     end
   end
   push!(w, d(x))
   return w
-end</code></pre><pre class="documenter-example-output">derive_r (generic function with 1 method)</pre><p>There are only two distinct algorithms in this handbook, and this is the second! It&#39;s quite similar to forward mode, with the difference that we walk backwards over the list, and each time we see a usage of a variable <span>$y_i$</span> we accumulate a gradient for that variable.</p><pre><code class="language-julia">derive_r(Wengert(:(x / (1 + x^2))), :x) |&gt; Expr</code></pre><pre class="documenter-example-output">:((y2 = 1 + x ^ 2, y2 + ((-x / y2 ^ 2) * 2) * x ^ 1;))</pre><p>For now, the output looks pretty similar to that of forward mode; we&#39;ll explain why the <a href="../backandforth/">distinction makes a difference</a> in future notebooks.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../../">« README</a><a class="docs-footer-nextpage" href="../backandforth/">Back &amp; Forth »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.3 on <span class="colophon-date" title="Friday 9 July 2021 10:25">Friday 9 July 2021</span>. Using Julia version 1.6.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+end</code></pre><pre class="documenter-example-output">derive_r (generic function with 1 method)</pre><p>There are only two distinct algorithms in this handbook, and this is the second! It&#39;s quite similar to forward mode, with the difference that we walk backwards over the list, and each time we see a usage of a variable <span>$y_i$</span> we accumulate a gradient for that variable.</p><pre><code class="language-julia">derive_r(Wengert(:(x / (1 + x^2))), :x) |&gt; Expr</code></pre><pre class="documenter-example-output">quote
+    y2 = 1 + x ^ 2
+    y2 / y2 ^ 2 + ((-x / y2 ^ 2) * 2) * x
+end</pre><p>For now, the output looks pretty similar to that of forward mode; we&#39;ll explain why the <a href="../backandforth/">distinction makes a difference</a> in future notebooks.</p><p>Lastly, let&#39;s assert the differentiators we wrote so far are all correct.</p><pre><code class="language-julia">y = :(x / (1 + x^2))
+
+x = 0.5
+dy = (1-x^2) / (1+x^2)^2 # hand-written derivative
+@assert @show(derive(y, :x) |&gt; eval) == dy
+@assert @show(derive(Wengert(y), :x) |&gt; Expr |&gt; eval) == dy
+@assert @show(derive_r(Wengert(y), :x) |&gt; Expr |&gt; eval) ≈ dy</code></pre><pre class="documenter-example-output">derive(y, :x) |&gt; eval = 0.48
+(derive(Wengert(y), :x) |&gt; Expr) |&gt; eval = 0.48
+(derive_r(Wengert(y), :x) |&gt; Expr) |&gt; eval = 0.48000000000000004</pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../../">« README</a><a class="docs-footer-nextpage" href="../backandforth/">Back &amp; Forth »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.3 on <span class="colophon-date" title="Friday 9 July 2021 10:43">Friday 9 July 2021</span>. Using Julia version 1.6.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
